@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from secretary.i18n import t
+
 KINDS: list[tuple[str, str]] = [
     ("text", "Текст"),
     ("photo", "Фото"),
@@ -16,7 +18,7 @@ KINDS: list[tuple[str, str]] = [
 ]
 
 KIND_TITLE = dict(KINDS)
-EVENTS = (("deleted", "Видалено"), ("edited", "Змінено"))
+EVENTS = ("deleted", "edited")
 
 # Methods that accept a caption.
 CAPTION_METHODS = {"photo", "video", "animation", "audio", "voice", "document"}
@@ -25,6 +27,6 @@ CAPTION_METHODS = {"photo", "video", "animation", "audio", "voice", "document"}
 TOPIC_KIND = "all"
 
 
-def all_topics() -> list[tuple[str, str, str]]:
-    """Only two forum topics: every edit, every deletion."""
-    return [(event, TOPIC_KIND, title) for event, title in EVENTS]
+def all_topics(code: str | None = "en") -> list[tuple[str, str, str]]:
+    """Only two forum topics: every edit, every deletion. Names follow the owner's language."""
+    return [(event, TOPIC_KIND, t(code, f"topic_{event}")) for event in EVENTS]

@@ -11,6 +11,7 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from aiogram.types import BufferedInputFile, MessageEntity, User
 
 from secretary.db import Database
+from secretary.i18n import t
 from secretary.kinds import TOPIC_KIND
 
 log = logging.getLogger("secretary.outbox")
@@ -84,16 +85,20 @@ class OutboxWorker:
         thread = await self.db.topic_thread(owner_id, event, TOPIC_KIND)
         return chat_id, thread
 
-    async def _send_step(self, chat_id: int, thread_id: int | None, step: dict, reply_to: int | None) -> int:
+    async def _send_step(
+        self, chat_id: int, thread_id: int | None, step: dict, reply_to: int | None, lang: str
+    ) -> int:
         try:
-            return await self._send_step_once(chat_id, thread_id, step, reply_to)
+            return await self._send_step_once(chat_id, thread_id, step, reply_to, lang)
         except TelegramBadRequest as exc:
             if thread_id and "thread not found" in str(exc).lower():
                 log.warning("topic %s missing, sending to general", thread_id)
-                return await self._send_step_once(chat_id, None, step, reply_to)
+                return await self._send_step_once(chat_id, None, step, reply_to, lang)
             raise
 
-    async def _send_step_once(self, chat_id: int, thread_id: int | None, step: dict, reply_to: int | None) -> int:
+    async def _send_step_once(
+        self, chat_id: int, thread_id: int | None, step: dict, reply_to: int | None, lang: str
+    ) -> int:
         kwargs: dict = {"chat_id": chat_id}
         if thread_id:
             kwargs["message_thread_id"] = thread_id
@@ -119,7 +124,7 @@ class OutboxWorker:
             method = step["method"]
             file_id = step.get("file_id")
             if not file_id:
-                msg = await self.bot.send_message(text="Медіа було недоступне боту.", **kwargs)
+                msg = await self.bot.send_message(text=t(lang, "media_unavailable"), **kwargs)
                 return msg.message_id
             caption = step.get("caption") or None
             send = {
@@ -156,12 +161,14 @@ class OutboxWorker:
                 if "thread not found" in str(exc).lower():
                     raise
                 log.warning("file_id rejected (%s): %s", method, exc)
-                note = (
-                    f"Не вдалося надіслати {method} за file_id.\n"
-                    f"file_unique_id: {step.get('file_unique_id')}\n"
-                    f"size: {step.get('file_size')}\n"
-                    f"name: {step.get('file_name') or '—'}\n"
-                    f"emoji: {step.get('emoji') or '—'}"
+                note = t(
+                    lang,
+                    "send_failed",
+                    method=method,
+                    unique=step.get("file_unique_id"),
+                    size=step.get("file_size"),
+                    name=step.get("file_name") or "—",
+                    emoji=step.get("emoji") or "—",
                 )
                 msg = await self.bot.send_message(text=note, **kwargs)
                 return msg.message_id
@@ -170,12 +177,13 @@ class OutboxWorker:
     async def _deliver(self, row: dict) -> None:
         payload = json.loads(row["payload_json"])
         steps = payload["steps"]
+        lang = payload.get("lang") or "en"
         chat_id, thread_id = await self._chat_and_thread(int(row["owner_user_id"]), row["event"], row["kind"])
         reply_to = None
         index = int(row["sent_steps"])
         while index < len(steps):
             await self._slot()
-            reply_to = await self._send_step(chat_id, thread_id, steps[index], reply_to)
+            reply_to = await self._send_step(chat_id, thread_id, steps[index], reply_to, lang)
             index += 1
             await self.db.outbox_progress(row["id"], index)
         await self.db.outbox_done(row["id"])

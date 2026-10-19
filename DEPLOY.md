@@ -16,15 +16,15 @@ apt install -y python3 python3-venv python3-pip
 ## 2. Код
 
 ```bash
-mkdir -p /opt/bussines_bot
-cd /opt/bussines_bot
-git clone <URL-репозитория> .
+mkdir -p /root/bussines_bot
+cd /root/bussines_bot
+git clone https://github.com/mifaaa93/bussines_bot .
 ```
 
 Если репозиторий уже склонирован, обновление:
 
 ```bash
-cd /opt/bussines_bot
+cd /root/bussines_bot
 systemctl stop secretary
 git pull
 .venv/bin/pip install -r requirements.txt
@@ -52,13 +52,13 @@ ADMIN_USER_IDS=
 Права, чтобы файл не читали другие пользователи, даже если потом появится не-root:
 
 ```bash
-chmod 600 /opt/bussines_bot/.env
+chmod 600 /root/bussines_bot/.env
 ```
 
 ## 4. Окружение
 
 ```bash
-cd /opt/bussines_bot
+cd /root/bussines_bot
 python3 -m venv .venv
 .venv/bin/pip install -U pip
 .venv/bin/pip install -r requirements.txt
@@ -84,8 +84,8 @@ After=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/opt/bussines_bot
-ExecStart=/opt/bussines_bot/.venv/bin/python -u bot.py
+WorkingDirectory=/root/bussines_bot
+ExecStart=/root/bussines_bot/.venv/bin/python -u bot.py
 Restart=always
 RestartSec=3
 
@@ -99,7 +99,7 @@ systemctl enable --now secretary
 systemctl status secretary
 ```
 
-Лог приложения: `/opt/bussines_bot/logs/bot.log`.  
+Лог приложения: `/root/bussines_bot/logs/bot.log`.  
 Лог сервиса: `journalctl -u secretary -f`.
 
 ## 6. Что не коммитить

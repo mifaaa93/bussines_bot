@@ -20,6 +20,7 @@ from aiogram.types import (
 from secretary.config import LOG_DIR, LOG_PATH, Settings, load_settings
 from secretary.content import fingerprint, is_foreign, snapshot_from_message
 from secretary.db import Database
+from secretary.i18n import locale, t
 from secretary.kinds import all_topics
 from secretary.notify import build_delete, build_edit, build_system, build_text_batch, build_unknown
 from secretary.sender import OutboxWorker
@@ -63,29 +64,51 @@ async def _remember_connection(bot: Bot, db: Database, connection_id: str) -> di
     return await db.connection(connection_id)
 
 
-async def ensure_topics(bot: Bot, db: Database, owner_id: int, chat_id: int) -> tuple[int, int, int, str | None]:
+def _topic_missing(exc: TelegramBadRequest) -> bool:
+    text = str(exc).lower()
+    return "not found" in text or "topic_deleted" in text or "topic deleted" in text
+
+
+def _topic_unchanged(exc: TelegramBadRequest) -> bool:
+    text = str(exc).lower()
+    return "not_modified" in text or "not modified" in text
+
+
+async def ensure_topics(
+    bot: Bot, db: Database, owner_id: int, chat_id: int, lang: str = "en"
+) -> tuple[int, int, int, str | None]:
     created = 0
     renamed = 0
     removed = 0
-    wanted = {(event, kind) for event, kind, _name in all_topics()}
-    for event, kind, name in all_topics():
+    topics = all_topics(lang)
+    wanted = {(event, kind) for event, kind, _name in topics}
+    for event, kind, name in topics:
         row = await db.topic_row(owner_id, event, kind)
-        if row is None:
+        if row is not None:
             try:
-                topic = await bot.create_forum_topic(chat_id=chat_id, name=name)
+                await bot.edit_forum_topic(
+                    chat_id=chat_id,
+                    message_thread_id=int(row["thread_id"]),
+                    name=name,
+                )
             except TelegramBadRequest as exc:
-                return created, renamed, removed, str(exc)
-            await db.save_topic(owner_id, event, kind, topic.message_thread_id, name)
-            created += 1
-            continue
-        if row["name"] == name:
-            continue
+                if _topic_unchanged(exc):
+                    continue
+                if not _topic_missing(exc):
+                    return created, renamed, removed, str(exc)
+                await db.delete_topic(owner_id, event, kind)
+                row = None
+            else:
+                if row["name"] != name:
+                    await db.save_topic(owner_id, event, kind, int(row["thread_id"]), name)
+                    renamed += 1
+                continue
         try:
-            await bot.edit_forum_topic(chat_id=chat_id, message_thread_id=int(row["thread_id"]), name=name)
+            topic = await bot.create_forum_topic(chat_id=chat_id, name=name)
         except TelegramBadRequest as exc:
             return created, renamed, removed, str(exc)
-        await db.save_topic(owner_id, event, kind, int(row["thread_id"]), name)
-        renamed += 1
+        await db.save_topic(owner_id, event, kind, topic.message_thread_id, name)
+        created += 1
 
     for row in await db.list_topics(owner_id):
         if (row["event"], row["kind"]) in wanted:
@@ -116,27 +139,19 @@ async def on_start(message: Message, bot: Bot, db: Database) -> None:
     if message.from_user is None:
         return
     user_id = message.from_user.id
-    await db.upsert_owner(user_id, message.chat.id)
-    created, renamed, removed, error = await ensure_topics(bot, db, user_id, message.chat.id)
+    lang = locale(message.from_user.language_code)
+    await db.upsert_owner(user_id, message.chat.id, lang)
+    created, renamed, removed, error = await ensure_topics(bot, db, user_id, message.chat.id, lang)
     conn = await db.connection_for_user(user_id)
-    lines = [
-        "Секретар стежить лише за особистими чатами.",
-        "Дві теми: «Змінено» і «Видалено».",
-        "Свої повідомлення зберігаю, але не дублюю.",
-    ]
+    lines = [t(lang, "start_1"), t(lang, "start_2"), t(lang, "start_3")]
     if error:
-        lines.append(
-            "Теми не створилися. У @BotFather увімкни режим тем (threaded mode) і знову натисни /topics.\n"
-            f"Помилка: {error}"
-        )
+        lines.append(t(lang, "start_topics_failed", error=error))
     else:
-        lines.append(
-            f"Створено: {created}. Перейменовано: {renamed}. Прибрано зайвих: {removed}."
-        )
+        lines.append(t(lang, "start_created", created=created, renamed=renamed, removed=removed))
     if conn:
-        lines.append(f"Секретаря підключено, connection_id={conn['connection_id']}.")
+        lines.append(t(lang, "start_connected", connection_id=conn["connection_id"]))
     else:
-        lines.append("Підключи бота в Налаштування → Telegram Business → Чат-боти.")
+        lines.append(t(lang, "start_connect"))
     await message.answer("\n".join(lines))
 
 
@@ -144,30 +159,31 @@ async def on_topics(message: Message, bot: Bot, db: Database) -> None:
     if message.from_user is None:
         return
     user_id = message.from_user.id
-    await db.upsert_owner(user_id, message.chat.id)
-    created, renamed, removed, error = await ensure_topics(bot, db, user_id, message.chat.id)
+    lang = locale(message.from_user.language_code)
+    await db.upsert_owner(user_id, message.chat.id, lang)
+    created, renamed, removed, error = await ensure_topics(bot, db, user_id, message.chat.id, lang)
     if error:
-        await message.answer(f"Не вдалося створити теми: {error}")
+        await message.answer(t(lang, "topics_failed", error=error))
         return
-    await message.answer(
-        f"Готово. Створено: {created}. Перейменовано: {renamed}. Прибрано зайвих: {removed}."
-    )
+    await message.answer(t(lang, "topics_ready", created=created, renamed=renamed, removed=removed))
 
 
 async def on_status(message: Message, db: Database) -> None:
     if message.from_user is None:
         return
     user_id = message.from_user.id
+    lang = locale(message.from_user.language_code)
+    await db.upsert_owner(user_id, message.chat.id, lang)
     counts = await db.user_counts(user_id)
     conn = await db.connection_for_user(user_id)
-    state = "увімкнено" if conn else "немає активного підключення"
+    state = t(lang, "status_on") if conn else t(lang, "status_off")
     await message.answer(
         "\n".join(
             [
-                f"Секретар: {state}",
-                f"Повідомлень у базі: {counts['messages']}",
-                f"Черга: {counts['pending']}, помилок: {counts['errors']}",
-                f"Тем: {await db.topic_count(user_id)}",
+                t(lang, "status_secretary", state=state),
+                t(lang, "status_messages", count=counts["messages"]),
+                t(lang, "status_queue", pending=counts["pending"], errors=counts["errors"]),
+                t(lang, "status_topics", count=await db.topic_count(user_id)),
             ]
         )
     )
@@ -175,27 +191,31 @@ async def on_status(message: Message, db: Database) -> None:
 
 async def on_admin(message: Message, db: Database, settings: Settings) -> None:
     if message.from_user is None or message.from_user.id not in settings.admin_user_ids:
-        await message.answer("Немає доступу.")
+        lang = locale(message.from_user.language_code) if message.from_user else "en"
+        await message.answer(t(lang, "admin_denied"))
         return
+    lang = locale(message.from_user.language_code)
     stats = await db.admin_stats()
-    kind_lines = [f"  {kind}: {count}" for kind, count in stats["kinds"].items()] or ["  немає"]
+    kind_lines = [
+        f"  {t(lang, f'kind_{kind}')}: {count}" for kind, count in stats["kinds"].items()
+    ] or [t(lang, "admin_kinds_empty")]
     outbox = stats["outbox"]
     await message.answer(
         "\n".join(
             [
-                "Адмін",
-                f"Користувачі: {stats['owners']}",
-                f"Підключення: увімкнено {stats['connections_on']}, вимкнено {stats['connections_off']}",
-                f"Чати з повідомленнями: {stats['chats']}",
-                f"Повідомлення: {stats['messages']}, з них позначені видаленими: {stats['deleted']}",
-                f"Версії: {stats['versions']}",
-                "За типами:",
+                t(lang, "admin_title"),
+                t(lang, "admin_users", count=stats["owners"]),
+                t(lang, "admin_connections", on=stats["connections_on"], off=stats["connections_off"]),
+                t(lang, "admin_chats", count=stats["chats"]),
+                t(lang, "admin_messages", count=stats["messages"], deleted=stats["deleted"]),
+                t(lang, "admin_versions", count=stats["versions"]),
+                t(lang, "admin_kinds"),
                 *kind_lines,
-                "Черга:",
-                f"  очікують: {outbox.get('pending', 0)}",
-                f"  надіслані: {outbox.get('sent', 0)}",
-                f"  пропущені: {outbox.get('skipped', 0)}",
-                f"  помилки: {outbox.get('error', 0)}",
+                t(lang, "admin_queue"),
+                t(lang, "admin_pending", count=outbox.get("pending", 0)),
+                t(lang, "admin_sent", count=outbox.get("sent", 0)),
+                t(lang, "admin_skipped", count=outbox.get("skipped", 0)),
+                t(lang, "admin_error", count=outbox.get("error", 0)),
             ]
         )
     )
@@ -245,7 +265,8 @@ async def on_edited(message: Message, event_update: Update, bot: Bot, db: Databa
     parent = None
     if snap["reply_to_message_id"]:
         parent = await db.get_message(conn_id, snap["chat_id"], snap["reply_to_message_id"])
-    payload = build_edit(old, snap, reply_hint=_reply_hint(parent))
+    lang = await db.owner_lang(business_user_id)
+    payload = build_edit(old, snap, reply_hint=_reply_hint(parent), lang=lang)
     key = f"edit:{conn_id}:{snap['chat_id']}:{snap['message_id']}:{snap['edit_date'] or snap['date']}"
     await _enqueue(db, business_user_id, "edited", snap["kind"], key, payload)
     log.info("queued edit msg=%s kind=%s had_old=%s", snap["message_id"], snap["kind"], old is not None)
@@ -263,6 +284,7 @@ async def on_deleted(event: BusinessMessagesDeleted, event_update: Update, bot: 
     if conn is None or not conn["is_enabled"]:
         return
     business_user_id = int(conn["business_user_id"])
+    lang = await db.owner_lang(business_user_id)
 
     texts: list[dict] = []
     others: list[dict] = []
@@ -283,7 +305,7 @@ async def on_deleted(event: BusinessMessagesDeleted, event_update: Update, bot: 
             others.append(row)
 
     if len(texts) > 5:
-        payload = build_text_batch(texts, chat.id)
+        payload = build_text_batch(texts, chat.id, lang)
         ids = "-".join(str(r["message_id"]) for r in texts)
         await _enqueue(db, business_user_id, "deleted", "text", f"delbatch:{conn_id}:{chat.id}:{ids}", payload)
     else:
@@ -291,7 +313,7 @@ async def on_deleted(event: BusinessMessagesDeleted, event_update: Update, bot: 
             parent = None
             if row.get("reply_to_message_id"):
                 parent = await db.get_message(conn_id, chat.id, row["reply_to_message_id"])
-            payload = build_delete(row, reply_hint=_reply_hint(parent))
+            payload = build_delete(row, reply_hint=_reply_hint(parent), lang=lang)
             await _enqueue(
                 db,
                 business_user_id,
@@ -304,7 +326,7 @@ async def on_deleted(event: BusinessMessagesDeleted, event_update: Update, bot: 
         parent = None
         if row.get("reply_to_message_id"):
             parent = await db.get_message(conn_id, chat.id, row["reply_to_message_id"])
-        payload = build_delete(row, reply_hint=_reply_hint(parent))
+        payload = build_delete(row, reply_hint=_reply_hint(parent), lang=lang)
         await _enqueue(
             db,
             business_user_id,
@@ -320,7 +342,7 @@ async def on_deleted(event: BusinessMessagesDeleted, event_update: Update, bot: 
             "first_name": chat.first_name,
             "last_name": getattr(chat, "last_name", None),
         }
-        payload = build_unknown(chat_json, unknown)
+        payload = build_unknown(chat_json, unknown, lang)
         ids = "-".join(str(i) for i in unknown)
         await _enqueue(
             db,
@@ -352,32 +374,35 @@ async def on_connection(conn: BusinessConnection, event_update: Update, db: Data
             "system",
             "system",
             f"conn-off:{conn.id}",
-            build_system("Секретаря вимкнено. Нові повідомлення не записую."),
+            build_system(t(await db.owner_lang(conn.user.id), "system_off")),
         )
     log.info("connection %s enabled=%s user=%s", conn.id, conn.is_enabled, conn.user.id)
 
 
-COMMANDS = [
-    BotCommand(command="start", description="Запустити секретаря і створити теми"),
-    BotCommand(command="topics", description="Створити або оновити теми"),
-    BotCommand(command="status", description="Стан секретаря і база"),
-]
-
-
-ADMIN_COMMANDS = [
-    *COMMANDS,
-    BotCommand(command="admin", description="Метрики бота"),
-]
+def _commands(code: str, *, admin: bool) -> list[BotCommand]:
+    items = [
+        BotCommand(command="start", description=t(code, "cmd_start")),
+        BotCommand(command="topics", description=t(code, "cmd_topics")),
+        BotCommand(command="status", description=t(code, "cmd_status")),
+    ]
+    if admin:
+        items.append(BotCommand(command="admin", description=t(code, "cmd_admin")))
+    return items
 
 
 async def setup_commands(bot: Bot, admin_ids: frozenset[int]) -> None:
-    await bot.set_my_commands(COMMANDS)
-    for admin_id in admin_ids:
-        try:
-            await bot.set_my_commands(ADMIN_COMMANDS, scope=BotCommandScopeChat(chat_id=admin_id))
-        except TelegramBadRequest as exc:
-            log.warning("admin commands for %s were not set: %s", admin_id, exc)
-    log.info("commands set: %s; admin: %s", ", ".join(item.command for item in COMMANDS), ", ".join(map(str, admin_ids)))
+    for code, language in (("en", None), ("uk", "uk"), ("ru", "ru")):
+        await bot.set_my_commands(_commands(code, admin=False), language_code=language)
+        for admin_id in admin_ids:
+            try:
+                await bot.set_my_commands(
+                    _commands(code, admin=True),
+                    scope=BotCommandScopeChat(chat_id=admin_id),
+                    language_code=language,
+                )
+            except TelegramBadRequest as exc:
+                log.warning("admin commands for %s/%s were not set: %s", admin_id, code, exc)
+    log.info("commands set for en, uk, ru; admin: %s", ", ".join(map(str, admin_ids)))
 
 
 def build_dispatcher(db: Database, settings: Settings) -> Dispatcher:

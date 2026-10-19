@@ -6,13 +6,14 @@ from typing import Any
 
 from secretary.content import body_text, display_name, primary_unique
 from secretary.htmlfmt import entities_to_html, escape
+from secretary.i18n import t
 
 MESSAGE_LIMIT = 4096
 MAX_PART = 4096
 CAPTION_LIMIT = 1024
 
 
-def chat_link(user: dict[str, Any] | None, chat: dict[str, Any] | None = None) -> str:
+def chat_link(user: dict[str, Any] | None, chat: dict[str, Any] | None = None, lang: str = "en") -> str:
     """Clickable display name. Username opens the chat, otherwise the profile."""
     person = user or {}
     if not person.get("id") and chat and chat.get("id"):
@@ -23,7 +24,7 @@ def chat_link(user: dict[str, Any] | None, chat: dict[str, Any] | None = None) -
             "username": chat.get("username"),
         }
     if not person.get("id"):
-        return "невідомий"
+        return t(lang, "unknown_person")
     name = escape(display_name(person))
     username = person.get("username") or (chat or {}).get("username")
     if username:
@@ -53,6 +54,7 @@ def pack_text_change(
     new: str | None,
     old_entities: list[dict[str, Any]] | None = None,
     new_entities: list[dict[str, Any]] | None = None,
+    lang: str = "en",
 ) -> list[dict[str, Any]]:
     """Edit/delete text bodies. Formatting is HTML. Oversized text goes to a file."""
     old_s = old or ""
@@ -69,20 +71,22 @@ def pack_text_change(
             return [_text_step(combined)]
         return [
             _text_step(head),
-            _doc_step("content.txt", plain, "Вміст"),
+            _doc_step("content.txt", plain, t(lang, "contents")),
         ]
 
-    combined = f"{head}\n\nБуло:\n{old_html}\n\nСтало:\n{new_html}"
+    before = t(lang, "before")
+    after = t(lang, "after")
+    combined = f"{head}\n\n{before}:\n{old_html}\n\n{after}:\n{new_html}"
     if len(combined) <= MESSAGE_LIMIT:
         return [_text_step(combined)]
-    old_part = f"{head}\n\nБуло:\n{old_html}"
-    new_part = f"Стало:\n{new_html}"
+    old_part = f"{head}\n\n{before}:\n{old_html}"
+    new_part = f"{after}:\n{new_html}"
     if len(old_part) <= MAX_PART and len(new_part) <= MAX_PART:
         return [_text_step(old_part), _text_step(new_part)]
     return [
-        _text_step(head + "\n\nПовний текст у файлах."),
-        _doc_step("bulo.txt", old_s, "Було"),
-        _doc_step("stalo.txt", new_s, "Стало"),
+        _text_step(head + "\n\n" + t(lang, "full_in_files")),
+        _doc_step("before.txt", old_s, before),
+        _doc_step("after.txt", new_s, after),
     ]
 
 
@@ -102,22 +106,20 @@ def _media_step(media: dict[str, Any], caption: str) -> dict[str, Any]:
     return step
 
 
-def _stub(media: dict[str, Any] | None, note: str) -> dict[str, Any]:
-    if not media:
-        return _text_step(note + "\nМедіа було недоступне.")
-    return _text_step(f"{note}\nМедіа було недоступне.")
+def _stub(note: str, lang: str) -> dict[str, Any]:
+    return _text_step(f"{note}\n{t(lang, 'media_unavailable')}")
 
 
-def build_delete(row: dict[str, Any], *, reply_hint: str | None = None) -> dict[str, Any]:
+def build_delete(row: dict[str, Any], *, reply_hint: str | None = None, lang: str = "en") -> dict[str, Any]:
     del reply_hint
-    header = chat_link(row.get("from_json"), row.get("chat_json"))
+    header = chat_link(row.get("from_json"), row.get("chat_json"), lang)
     kind = row["kind"]
     body = body_text(kind, row.get("text"), row.get("caption"))
     body_html = _html_body(body, row.get("entities"))
     media = (row.get("media") or [None])[0]
     steps: list[dict[str, Any]] = []
     if kind == "text" or (not media and body):
-        steps.extend(pack_text_change(header, body, None, row.get("entities")))
+        steps.extend(pack_text_change(header, body, None, row.get("entities"), lang=lang))
     elif media and media.get("file_id"):
         if media.get("method") not in {"photo", "video", "animation", "audio", "voice", "document"}:
             steps.append(_text_step(header))
@@ -130,13 +132,13 @@ def build_delete(row: dict[str, Any], *, reply_hint: str | None = None) -> dict[
                     cap = joined
                 else:
                     steps.append(_media_step(media, header))
-                    steps.extend(pack_text_change("Підпис", body, None, row.get("entities")))
+                    steps.extend(pack_text_change(t(lang, "caption"), body, None, row.get("entities"), lang=lang))
                     return {"steps": steps}
             steps.append(_media_step(media, cap))
     else:
         steps.append(_text_step(header))
-        steps.append(_stub(media, "Немає чим надіслати файл."))
-    return {"steps": steps}
+        steps.append(_stub(t(lang, "cannot_send"), lang))
+    return {"steps": steps, "lang": lang}
 
 
 def build_edit(
@@ -144,13 +146,14 @@ def build_edit(
     new: dict[str, Any],
     *,
     reply_hint: str | None = None,
+    lang: str = "en",
 ) -> dict[str, Any]:
     del reply_hint
     who = (old or new).get("from_json") or new.get("from_json")
     chat = (old or new).get("chat_json") or new.get("chat_json")
-    header = chat_link(who, chat)
+    header = chat_link(who, chat, lang)
     if old is None:
-        header = header + "\n\nПопередня версія невідома."
+        header = header + "\n\n" + t(lang, "previous_unknown")
     old_body = body_text(old["kind"], old.get("text"), old.get("caption")) if old else None
     new_body = body_text(new["kind"], new.get("text"), new.get("caption"))
     old_entities = old.get("entities") if old else None
@@ -165,51 +168,51 @@ def build_edit(
 
     steps: list[dict[str, Any]] = []
     if old is None:
-        steps.extend(pack_text_change(header, None, new_body or None, None, new_entities))
+        steps.extend(pack_text_change(header, None, new_body or None, None, new_entities, lang))
         if new_media and new_media.get("file_id"):
-            steps.append(_media_step(new_media, "Стало"))
-        return {"steps": steps}
+            steps.append(_media_step(new_media, t(lang, "became")))
+        return {"steps": steps, "lang": lang}
 
     if not media_changed and not kind_changed:
         # Caption or text only, including a formatting-only edit. Do not resend the file.
-        steps.extend(pack_text_change(header, old_body, new_body, old_entities, new_entities))
-        return {"steps": steps}
+        steps.extend(pack_text_change(header, old_body, new_body, old_entities, new_entities, lang))
+        return {"steps": steps, "lang": lang}
 
     formatting_changed = (old_entities or []) != (new_entities or [])
     if (text_changed or formatting_changed) and (old_body or new_body):
-        steps.extend(pack_text_change(header, old_body, new_body, old_entities, new_entities))
+        steps.extend(pack_text_change(header, old_body, new_body, old_entities, new_entities, lang))
     else:
         steps.append(_text_step(header))
     if old_media and old_media.get("file_id"):
-        steps.append(_media_step(old_media, "Було"))
+        steps.append(_media_step(old_media, t(lang, "was")))
     elif old_media:
-        steps.append(_stub(old_media, "Було"))
+        steps.append(_stub(t(lang, "was"), lang))
     if new_media and new_media.get("file_id"):
-        steps.append(_media_step(new_media, "Стало"))
+        steps.append(_media_step(new_media, t(lang, "became")))
     elif new_media:
-        steps.append(_stub(new_media, "Стало"))
-    return {"steps": steps}
+        steps.append(_stub(t(lang, "became"), lang))
+    return {"steps": steps, "lang": lang}
 
 
-def build_text_batch(rows: list[dict[str, Any]], chat_id: int) -> dict[str, Any]:
+def build_text_batch(rows: list[dict[str, Any]], chat_id: int, lang: str = "en") -> dict[str, Any]:
     del chat_id
-    header = chat_link(rows[0].get("from_json"), rows[0].get("chat_json"))
+    header = chat_link(rows[0].get("from_json"), rows[0].get("chat_json"), lang)
     chunks = [
         _html_body(body_text(row["kind"], row.get("text"), row.get("caption")), row.get("entities"))
         for row in rows
     ]
     joined = f"{header}\n\n" + "\n\n---\n\n".join(chunks)
     if len(joined) <= MESSAGE_LIMIT:
-        return {"steps": [_text_step(joined)]}
+        return {"steps": [_text_step(joined)], "lang": lang}
     plain = [body_text(row["kind"], row.get("text"), row.get("caption")) for row in rows]
     steps = [
         _text_step(header),
-        _doc_step("deleted.txt", "\n\n---\n\n".join(plain), "Видалені тексти"),
+        _doc_step("deleted.txt", "\n\n---\n\n".join(plain), t(lang, "deleted_texts")),
     ]
-    return {"steps": steps}
+    return {"steps": steps, "lang": lang}
 
 
-def build_unknown(chat: dict[str, Any], message_ids: list[int]) -> dict[str, Any]:
+def build_unknown(chat: dict[str, Any], message_ids: list[int], lang: str = "en") -> dict[str, Any]:
     del message_ids
     user = {
         "id": chat.get("id"),
@@ -218,8 +221,8 @@ def build_unknown(chat: dict[str, Any], message_ids: list[int]) -> dict[str, Any
         "username": chat.get("username"),
         "is_bot": False,
     }
-    header = chat_link(user, chat)
-    return {"steps": [_text_step(f"{header}\n\nВміст невідомий.")]}
+    header = chat_link(user, chat, lang)
+    return {"steps": [_text_step(f"{header}\n\n{t(lang, 'contents_unknown')}")], "lang": lang}
 
 
 def build_system(text: str) -> dict[str, Any]:

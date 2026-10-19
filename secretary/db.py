@@ -124,6 +124,10 @@ class Database:
         await self.conn.execute(
             "UPDATE owners SET tz='Europe/Kyiv' WHERE tz IN ('Europe/Moscow', 'Europe/Kiev')"
         )
+        columns = await self.conn.execute("PRAGMA table_info(owners)")
+        names = {row["name"] for row in await columns.fetchall()}
+        if "lang" not in names:
+            await self.conn.execute("ALTER TABLE owners ADD COLUMN lang TEXT NOT NULL DEFAULT 'en'")
         await self.conn.commit()
 
     async def close(self) -> None:
@@ -144,16 +148,35 @@ class Database:
         await self._c().commit()
         return cur.rowcount == 1
 
-    async def upsert_owner(self, user_id: int, admin_chat_id: int) -> None:
-        await self._c().execute(
-            """
-            INSERT INTO owners(user_id, admin_chat_id, created_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET admin_chat_id=excluded.admin_chat_id
-            """,
-            (user_id, admin_chat_id, _now()),
-        )
+    async def upsert_owner(self, user_id: int, admin_chat_id: int, lang: str | None = None) -> None:
+        if lang is None:
+            await self._c().execute(
+                """
+                INSERT INTO owners(user_id, admin_chat_id, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET admin_chat_id=excluded.admin_chat_id
+                """,
+                (user_id, admin_chat_id, _now()),
+            )
+        else:
+            await self._c().execute(
+                """
+                INSERT INTO owners(user_id, admin_chat_id, lang, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(user_id) DO UPDATE SET
+                    admin_chat_id=excluded.admin_chat_id,
+                    lang=excluded.lang
+                """,
+                (user_id, admin_chat_id, lang, _now()),
+            )
         await self._c().commit()
+
+    async def owner_lang(self, user_id: int) -> str:
+        cur = await self._c().execute("SELECT lang FROM owners WHERE user_id=?", (user_id,))
+        row = await cur.fetchone()
+        if row is None or not row["lang"]:
+            return "en"
+        return str(row["lang"])
 
     async def owner_chat(self, user_id: int) -> int | None:
         cur = await self._c().execute("SELECT admin_chat_id FROM owners WHERE user_id=?", (user_id,))

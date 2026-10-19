@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 from secretary.content import detect_kind, fingerprint, is_foreign, snapshot_from_message
 from secretary.htmlfmt import entities_to_html
+from secretary.i18n import locale
 from secretary.notify import build_delete, build_edit, chat_link
 
 
@@ -62,7 +63,9 @@ class HeaderTests(unittest.TestCase):
         self.assertNotIn("user_id=", text)
 
     def test_unknown_user_has_no_mention(self):
-        self.assertEqual(chat_link(None), "невідомий")
+        self.assertEqual(chat_link(None), "unknown")
+        self.assertEqual(chat_link(None, lang="uk"), "невідомий")
+        self.assertEqual(chat_link(None, lang="ru"), "неизвестный")
 
 
 class ContentTests(unittest.TestCase):
@@ -104,8 +107,8 @@ class NotifyTests(unittest.TestCase):
         ops = [s["op"] for s in payload["steps"]]
         self.assertIn("document", ops)
         names = [s.get("filename") for s in payload["steps"]]
-        self.assertIn("bulo.txt", names)
-        self.assertIn("stalo.txt", names)
+        self.assertIn("before.txt", names)
+        self.assertIn("after.txt", names)
         self.assertTrue(any(len(s.get("content", "")) == 5000 for s in payload["steps"]))
 
     def test_caption_only_does_not_resend_photo(self):
@@ -174,6 +177,17 @@ class HtmlTests(unittest.TestCase):
         self.assertIn("<b>було</b>", blob)
         self.assertIn("<i>стало</i>", blob)
         self.assertEqual(payload["steps"][0]["parse_mode"], "HTML")
+
+
+class LocaleTests(unittest.TestCase):
+    def test_only_uk_and_ru_are_kept(self):
+        self.assertEqual(locale("uk"), "uk")
+        self.assertEqual(locale("uk-UA"), "uk")
+        self.assertEqual(locale("ru"), "ru")
+        self.assertEqual(locale("en"), "en")
+        self.assertEqual(locale("de"), "en")
+        self.assertEqual(locale(None), "en")
+        self.assertEqual(locale(""), "en")
 
 
 if __name__ == "__main__":
