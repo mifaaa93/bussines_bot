@@ -74,6 +74,28 @@ def _topic_unchanged(exc: TelegramBadRequest) -> bool:
     return "not_modified" in text or "not modified" in text
 
 
+async def _topic_still_there(bot: Bot, chat_id: int, thread_id: int) -> bool:
+    """Private chats often do not error when a deleted topic id is reused. Check where a message lands."""
+    try:
+        sent = await bot.send_message(
+            chat_id=chat_id,
+            text=".",
+            message_thread_id=thread_id,
+            disable_notification=True,
+        )
+    except TelegramBadRequest as exc:
+        if _topic_missing(exc):
+            return False
+        raise
+    landed = getattr(sent, "message_thread_id", None)
+    alive = bool(getattr(sent, "is_topic_message", False)) and landed is not None and int(landed) == int(thread_id)
+    try:
+        await bot.delete_message(chat_id=chat_id, message_id=sent.message_id)
+    except TelegramBadRequest:
+        log.warning("could not delete topic probe message %s", sent.message_id)
+    return alive
+
+
 async def ensure_topics(
     bot: Bot, db: Database, owner_id: int, chat_id: int, lang: str = "en"
 ) -> tuple[int, int, int, str | None]:
@@ -86,20 +108,24 @@ async def ensure_topics(
         row = await db.topic_row(owner_id, event, kind)
         if row is not None:
             try:
-                await bot.edit_forum_topic(
-                    chat_id=chat_id,
-                    message_thread_id=int(row["thread_id"]),
-                    name=name,
-                )
+                alive = await _topic_still_there(bot, chat_id, int(row["thread_id"]))
             except TelegramBadRequest as exc:
-                if _topic_unchanged(exc):
-                    continue
-                if not _topic_missing(exc):
-                    return created, renamed, removed, str(exc)
+                return created, renamed, removed, str(exc)
+            if not alive:
+                log.info("topic %s/%s thread %s is gone, recreating", event, kind, row["thread_id"])
                 await db.delete_topic(owner_id, event, kind)
                 row = None
             else:
                 if row["name"] != name:
+                    try:
+                        await bot.edit_forum_topic(
+                            chat_id=chat_id,
+                            message_thread_id=int(row["thread_id"]),
+                            name=name,
+                        )
+                    except TelegramBadRequest as exc:
+                        if not _topic_unchanged(exc):
+                            return created, renamed, removed, str(exc)
                     await db.save_topic(owner_id, event, kind, int(row["thread_id"]), name)
                     renamed += 1
                 continue
