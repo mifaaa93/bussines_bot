@@ -165,11 +165,25 @@ def fingerprint(row: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
+def is_private_chat(chat_type: str | None) -> bool:
+    return str(chat_type or "") == "private"
+
+
 def is_foreign(row: dict[str, Any], business_user_id: int) -> bool:
+    """True if the message was sent by the other person, not the account owner."""
     if row.get("sender_business_bot"):
         return False
     uid = row.get("from_user_id")
     if uid is None:
-        chat_type = str(row.get("chat_type") or "")
-        return chat_type in {"group", "supergroup", "channel"}
+        return False
     return int(uid) != int(business_user_id)
+
+
+def should_notify(row: dict[str, Any], business_user_id: int) -> bool:
+    """Notify only when the other person edits or deletes in a private chat."""
+    chat_type = row.get("chat_type")
+    if not chat_type and row.get("chat_json"):
+        chat_type = (row["chat_json"] or {}).get("type")
+    if not is_private_chat(chat_type):
+        return False
+    return is_foreign(row, business_user_id)

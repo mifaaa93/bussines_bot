@@ -108,6 +108,8 @@ def _row_to_message(row: aiosqlite.Row) -> dict[str, Any]:
     data["entities"] = json.loads(data["entities_json"]) if data["entities_json"] else []
     data["media"] = json.loads(data["media_json"]) if data["media_json"] else []
     data["sender_business_bot"] = bool(data["sender_business_bot"])
+    chat = data.get("chat_json") or {}
+    data["chat_type"] = chat.get("type") or "private"
     return data
 
 

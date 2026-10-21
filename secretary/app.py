@@ -18,7 +18,7 @@ from aiogram.types import (
 )
 
 from secretary.config import LOG_DIR, LOG_PATH, Settings, load_settings
-from secretary.content import fingerprint, is_foreign, snapshot_from_message
+from secretary.content import fingerprint, is_foreign, is_private_chat, should_notify, snapshot_from_message
 from secretary.db import Database
 from secretary.i18n import locale, t
 from secretary.notify import build_delete, build_edit, build_system, build_text_batch, build_unknown
@@ -160,6 +160,9 @@ async def on_business_message(message: Message, event_update: Update, bot: Bot, 
     if not await db.mark_update(event_update.update_id):
         return
     snap = snapshot_from_message(message)
+    if not is_private_chat(snap["chat_type"]):
+        log.info("skip non-private message chat=%s type=%s", snap["chat_id"], snap["chat_type"])
+        return
     conn = await _remember_connection(bot, db, message.business_connection_id)
     if conn is not None and not conn["is_enabled"]:
         log.info("skip message, connection disabled")
@@ -178,6 +181,9 @@ async def on_edited(message: Message, event_update: Update, bot: Bot, db: Databa
     if not await db.mark_update(event_update.update_id):
         return
     snap = snapshot_from_message(message)
+    if not is_private_chat(snap["chat_type"]):
+        log.info("skip non-private edit chat=%s type=%s", snap["chat_id"], snap["chat_type"])
+        return
     conn_id = message.business_connection_id
     conn = await _remember_connection(bot, db, conn_id)
     if conn is not None and not conn["is_enabled"]:
@@ -188,8 +194,11 @@ async def on_edited(message: Message, event_update: Update, bot: Bot, db: Databa
         log.info("edit without content change msg=%s", snap["message_id"])
         return
     await db.save_message(conn_id, snap, _raw(message))
-    if business_user_id is None or not is_foreign(snap, business_user_id):
-        log.info("own or unresolved edit stored msg=%s", snap["message_id"])
+    if business_user_id is None:
+        log.info("edit stored without connection msg=%s", snap["message_id"])
+        return
+    if not should_notify(snap, business_user_id):
+        log.info("skip own edit msg=%s from=%s", snap["message_id"], snap["from_user_id"])
         return
     parent = None
     if snap["reply_to_message_id"]:
@@ -205,6 +214,9 @@ async def on_deleted(event: BusinessMessagesDeleted, event_update: Update, bot: 
     if not await db.mark_update(event_update.update_id):
         return
     chat = event.chat
+    if not is_private_chat(str(chat.type)):
+        log.info("skip non-private delete chat=%s type=%s", chat.id, chat.type)
+        return
     conn_id = event.business_connection_id
     conn = await _remember_connection(bot, db, conn_id)
     if conn is None or not conn["is_enabled"]:
@@ -223,7 +235,8 @@ async def on_deleted(event: BusinessMessagesDeleted, event_update: Update, bot: 
         if row.get("deleted_at"):
             continue
         await db.mark_deleted(conn_id, chat.id, message_id)
-        if not is_foreign(row, business_user_id):
+        if not should_notify(row, business_user_id):
+            log.info("skip own delete msg=%s from=%s", message_id, row.get("from_user_id"))
             continue
         if row["kind"] == "text":
             texts.append(row)
@@ -262,22 +275,7 @@ async def on_deleted(event: BusinessMessagesDeleted, event_update: Update, bot: 
             payload,
         )
     if unknown:
-        chat_json = {
-            "id": chat.id,
-            "username": chat.username,
-            "first_name": chat.first_name,
-            "last_name": getattr(chat, "last_name", None),
-        }
-        payload = build_unknown(chat_json, unknown, lang)
-        ids = "-".join(str(i) for i in unknown)
-        await _enqueue(
-            db,
-            business_user_id,
-            "system",
-            "system",
-            f"del-unknown:{conn_id}:{chat.id}:{ids}",
-            payload,
-        )
+        log.info("deleted unknown ids, skip empty notify chat=%s ids=%s", chat.id, unknown)
     log.info(
         "deleted chat=%s texts=%s media=%s unknown=%s",
         chat.id,

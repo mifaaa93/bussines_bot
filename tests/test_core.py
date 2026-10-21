@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from secretary.content import detect_kind, fingerprint, is_foreign, snapshot_from_message
+from secretary.content import detect_kind, fingerprint, is_foreign, should_notify, snapshot_from_message
 from secretary.htmlfmt import entities_to_html
 from secretary.i18n import locale
 from secretary.notify import build_delete, build_edit, chat_link, event_header, labeled_header
@@ -107,13 +107,15 @@ class ContentTests(unittest.TestCase):
         self.assertFalse(is_foreign(snap, snap["from_user_id"]))
         self.assertTrue(is_foreign(snap, 999))
 
-    def test_anonymous_group_post_is_foreign(self):
-        msg = _msg(text="hi", from_user=None)
+    def test_notify_only_other_person_in_private(self):
+        other = snapshot_from_message(_msg(text="hi"))
+        self.assertTrue(should_notify(other, 999))
+        own = snapshot_from_message(_msg(text="hi"))
+        self.assertFalse(should_notify(own, own["from_user_id"]))
+        msg = _msg(text="hi")
         msg.chat.type = "supergroup"
-        snap = snapshot_from_message(msg)
-        self.assertTrue(is_foreign(snap, 999))
-        private = snapshot_from_message(_msg(text="hi", from_user=None))
-        self.assertFalse(is_foreign(private, 999))
+        group = snapshot_from_message(msg)
+        self.assertFalse(should_notify(group, 999))
 
     def test_same_fingerprint_ignores_nothing_else(self):
         a = snapshot_from_message(_msg(text="a"))
