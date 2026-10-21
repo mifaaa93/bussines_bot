@@ -346,7 +346,7 @@ async def main() -> None:
     settings = load_settings()
     db = Database()
     await db.open()
-    bot = Bot(settings.bot_token, default=DefaultBotProperties())
+    bot = Bot(settings.bot_token, default=DefaultBotProperties(link_preview_is_disabled=True))
     dp = build_dispatcher(db, settings)
     worker = OutboxWorker(bot, db)
     task = asyncio.create_task(worker.run())
