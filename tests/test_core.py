@@ -4,7 +4,7 @@ from types import SimpleNamespace
 from secretary.content import detect_kind, fingerprint, is_foreign, snapshot_from_message
 from secretary.htmlfmt import entities_to_html
 from secretary.i18n import locale
-from secretary.notify import build_delete, build_edit, chat_link
+from secretary.notify import build_delete, build_edit, chat_link, event_header, labeled_header
 
 
 def _user(uid=1, first="Михаил", username="Mifaaa93"):
@@ -67,6 +67,22 @@ class HeaderTests(unittest.TestCase):
         self.assertEqual(chat_link(None, lang="uk"), "невідомий")
         self.assertEqual(chat_link(None, lang="ru"), "неизвестный")
 
+    def test_group_header_has_chat_and_sender(self):
+        user = {"id": 5, "first_name": "Ann", "username": "ann", "is_bot": False}
+        chat = {"id": -1001, "type": "supergroup", "title": "Work", "username": "workchat"}
+        html = event_header(user, chat, "en")
+        self.assertIn("Work", html)
+        self.assertIn("https://t.me/workchat", html)
+        self.assertIn("Ann", html)
+        self.assertIn("From:", html)
+
+    def test_event_label(self):
+        user = {"id": 5, "first_name": "Ann", "username": "ann", "is_bot": False}
+        html = labeled_header("deleted", user, None, "en")
+        self.assertTrue(html.startswith("<b>Deleted</b>"))
+        html_uk = labeled_header("edited", user, None, "uk")
+        self.assertTrue(html_uk.startswith("<b>Змінено</b>"))
+
 
 class ContentTests(unittest.TestCase):
     def test_photo_kind_and_largest_size(self):
@@ -90,6 +106,14 @@ class ContentTests(unittest.TestCase):
         snap = snapshot_from_message(_msg(text="hi"))
         self.assertFalse(is_foreign(snap, snap["from_user_id"]))
         self.assertTrue(is_foreign(snap, 999))
+
+    def test_anonymous_group_post_is_foreign(self):
+        msg = _msg(text="hi", from_user=None)
+        msg.chat.type = "supergroup"
+        snap = snapshot_from_message(msg)
+        self.assertTrue(is_foreign(snap, 999))
+        private = snapshot_from_message(_msg(text="hi", from_user=None))
+        self.assertFalse(is_foreign(private, 999))
 
     def test_same_fingerprint_ignores_nothing_else(self):
         a = snapshot_from_message(_msg(text="a"))

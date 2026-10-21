@@ -170,5 +170,6 @@ def is_foreign(row: dict[str, Any], business_user_id: int) -> bool:
         return False
     uid = row.get("from_user_id")
     if uid is None:
-        return False
+        chat_type = str(row.get("chat_type") or "")
+        return chat_type in {"group", "supergroup", "channel"}
     return int(uid) != int(business_user_id)

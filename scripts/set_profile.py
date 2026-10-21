@@ -12,31 +12,31 @@ NAME_EN = "Secretary"
 NAME_UK = "Секретар"
 NAME_RU = "Секретарь"
 
-SHORT_EN = "Sees edits and deletions in private chats and sends them to you."
-SHORT_UK = "Бачить правки й видалення в особистих чатах і надсилає їх тобі."
-SHORT_RU = "Видит правки и удаления в личных чатах и присылает их тебе."
+SHORT_EN = "Sees edits and deletions in chats and sends them to you."
+SHORT_UK = "Бачить правки й видалення в чатах і надсилає їх тобі."
+SHORT_RU = "Видит правки и удаления в чатах и присылает их тебе."
 
 DESC_EN = """Connect the bot as a secretary in Telegram Business.
 
-It keeps private chats and tells you when someone edits or deletes a message. Text formatting stays, and so do photos and videos.
+It keeps chats and tells you when someone edits or deletes a message. Text formatting stays, and so do photos and videos.
 
-Two topics: Edited and Deleted. Groups and channels are ignored.
+Events are labeled Edited or Deleted. Works in private chats, groups and channels.
 
 Send /start, then connect the bot in Telegram Business settings."""
 
 DESC_UK = """Підключи бота як секретаря в Telegram Business.
 
-Він зберігає особисті листування і пише тобі, коли співрозмовник змінює або видаляє повідомлення. Текст лишається з оформленням, фото і відео теж.
+Він зберігає листування і пише тобі, коли хтось змінює або видаляє повідомлення. Текст лишається з оформленням, фото і відео теж.
 
-Дві теми: «Змінено» і «Видалено». Групи й канали бот не чіпає.
+Події підписані: Змінено або Видалено. Працює в особистих чатах, групах і каналах.
 
 Натисни /start, потім підключи бота в налаштуваннях Telegram Business."""
 
 DESC_RU = """Подключи бота как секретаря в Telegram Business.
 
-Он хранит личные переписки и пишет тебе, когда собеседник меняет или удаляет сообщение. Оформление текста сохраняется, фото и видео тоже.
+Он хранит переписки и пишет тебе, когда кто-то меняет или удаляет сообщение. Оформление текста сохраняется, фото и видео тоже.
 
-Две темы: «Змінено» и «Видалено». Группы и каналы бот не смотрит.
+События подписаны: Изменено или Удалено. Работает в личных чатах, группах и каналах.
 
 Нажми /start, затем подключи бота в настройках Telegram Business."""
 

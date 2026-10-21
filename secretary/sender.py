@@ -12,7 +12,6 @@ from aiogram.types import BufferedInputFile, MessageEntity, User
 
 from secretary.db import Database
 from secretary.i18n import t
-from secretary.kinds import TOPIC_KIND
 
 log = logging.getLogger("secretary.outbox")
 
@@ -72,7 +71,7 @@ class OutboxWorker:
                 return
             await asyncio.sleep(max(0.2, 60 - (now - self._sent[0])))
 
-    async def _chat_and_thread(self, owner_id: int, event: str, kind: str) -> tuple[int, int | None]:
+    async def _owner_chat(self, owner_id: int) -> int:
         chat_id = await self.db.owner_chat(owner_id)
         if chat_id is None:
             conn = await self.db.connection_for_user(owner_id)
@@ -80,28 +79,10 @@ class OutboxWorker:
                 chat_id = int(conn["user_chat_id"])
         if chat_id is None:
             raise RuntimeError("owner chat is unknown, send /start")
-        if event == "system":
-            return chat_id, None
-        thread = await self.db.topic_thread(owner_id, event, TOPIC_KIND)
-        return chat_id, thread
+        return chat_id
 
-    async def _send_step(
-        self, chat_id: int, thread_id: int | None, step: dict, reply_to: int | None, lang: str
-    ) -> int:
-        try:
-            return await self._send_step_once(chat_id, thread_id, step, reply_to, lang)
-        except TelegramBadRequest as exc:
-            if thread_id and "thread not found" in str(exc).lower():
-                log.warning("topic %s missing, sending to general", thread_id)
-                return await self._send_step_once(chat_id, None, step, reply_to, lang)
-            raise
-
-    async def _send_step_once(
-        self, chat_id: int, thread_id: int | None, step: dict, reply_to: int | None, lang: str
-    ) -> int:
+    async def _send_step(self, chat_id: int, step: dict, reply_to: int | None, lang: str) -> int:
         kwargs: dict = {"chat_id": chat_id}
-        if thread_id:
-            kwargs["message_thread_id"] = thread_id
         if reply_to:
             kwargs["reply_to_message_id"] = reply_to
         op = step["op"]
@@ -178,12 +159,12 @@ class OutboxWorker:
         payload = json.loads(row["payload_json"])
         steps = payload["steps"]
         lang = payload.get("lang") or "en"
-        chat_id, thread_id = await self._chat_and_thread(int(row["owner_user_id"]), row["event"], row["kind"])
+        chat_id = await self._owner_chat(int(row["owner_user_id"]))
         reply_to = None
         index = int(row["sent_steps"])
         while index < len(steps):
             await self._slot()
-            reply_to = await self._send_step(chat_id, thread_id, steps[index], reply_to, lang)
+            reply_to = await self._send_step(chat_id, steps[index], reply_to, lang)
             index += 1
             await self.db.outbox_progress(row["id"], index)
         await self.db.outbox_done(row["id"])

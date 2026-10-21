@@ -21,7 +21,6 @@ from secretary.config import LOG_DIR, LOG_PATH, Settings, load_settings
 from secretary.content import fingerprint, is_foreign, snapshot_from_message
 from secretary.db import Database
 from secretary.i18n import locale, t
-from secretary.kinds import all_topics
 from secretary.notify import build_delete, build_edit, build_system, build_text_batch, build_unknown
 from secretary.sender import OutboxWorker
 
@@ -46,8 +45,7 @@ def _raw(message: Message) -> dict:
     return message.model_dump(mode="json", exclude_none=True)
 
 
-def _is_private(chat_type: str) -> bool:
-    return chat_type == "private"
+
 
 
 async def _remember_connection(bot: Bot, db: Database, connection_id: str) -> dict | None:
@@ -64,89 +62,13 @@ async def _remember_connection(bot: Bot, db: Database, connection_id: str) -> di
     return await db.connection(connection_id)
 
 
-def _topic_missing(exc: TelegramBadRequest) -> bool:
-    text = str(exc).lower()
-    return "not found" in text or "topic_deleted" in text or "topic deleted" in text
-
-
-def _topic_unchanged(exc: TelegramBadRequest) -> bool:
-    text = str(exc).lower()
-    return "not_modified" in text or "not modified" in text
-
-
-async def _topic_still_there(bot: Bot, chat_id: int, thread_id: int) -> bool:
-    """Private chats often do not error when a deleted topic id is reused. Check where a message lands."""
-    try:
-        sent = await bot.send_message(
-            chat_id=chat_id,
-            text=".",
-            message_thread_id=thread_id,
-            disable_notification=True,
-        )
-    except TelegramBadRequest as exc:
-        if _topic_missing(exc):
-            return False
-        raise
-    landed = getattr(sent, "message_thread_id", None)
-    alive = bool(getattr(sent, "is_topic_message", False)) and landed is not None and int(landed) == int(thread_id)
-    try:
-        await bot.delete_message(chat_id=chat_id, message_id=sent.message_id)
-    except TelegramBadRequest:
-        log.warning("could not delete topic probe message %s", sent.message_id)
-    return alive
-
-
-async def ensure_topics(
-    bot: Bot, db: Database, owner_id: int, chat_id: int, lang: str = "en"
-) -> tuple[int, int, int, str | None]:
-    created = 0
-    renamed = 0
-    removed = 0
-    topics = all_topics(lang)
-    wanted = {(event, kind) for event, kind, _name in topics}
-    for event, kind, name in topics:
-        row = await db.topic_row(owner_id, event, kind)
-        if row is not None:
-            try:
-                alive = await _topic_still_there(bot, chat_id, int(row["thread_id"]))
-            except TelegramBadRequest as exc:
-                return created, renamed, removed, str(exc)
-            if not alive:
-                log.info("topic %s/%s thread %s is gone, recreating", event, kind, row["thread_id"])
-                await db.delete_topic(owner_id, event, kind)
-                row = None
-            else:
-                if row["name"] != name:
-                    try:
-                        await bot.edit_forum_topic(
-                            chat_id=chat_id,
-                            message_thread_id=int(row["thread_id"]),
-                            name=name,
-                        )
-                    except TelegramBadRequest as exc:
-                        if not _topic_unchanged(exc):
-                            return created, renamed, removed, str(exc)
-                    await db.save_topic(owner_id, event, kind, int(row["thread_id"]), name)
-                    renamed += 1
-                continue
-        try:
-            topic = await bot.create_forum_topic(chat_id=chat_id, name=name)
-        except TelegramBadRequest as exc:
-            return created, renamed, removed, str(exc)
-        await db.save_topic(owner_id, event, kind, topic.message_thread_id, name)
-        created += 1
-
+async def drop_old_topics(bot: Bot, db: Database, owner_id: int, chat_id: int) -> None:
     for row in await db.list_topics(owner_id):
-        if (row["event"], row["kind"]) in wanted:
-            continue
         try:
             await bot.delete_forum_topic(chat_id=chat_id, message_thread_id=int(row["thread_id"]))
-        except TelegramBadRequest as exc:
-            if "topic_not_found" not in str(exc).lower() and "not found" not in str(exc).lower():
-                log.warning("could not delete topic %s: %s", row["name"], exc)
+        except TelegramBadRequest:
+            pass
         await db.delete_topic(owner_id, row["event"], row["kind"])
-        removed += 1
-    return created, renamed, removed, None
 
 
 def _reply_hint(parent: dict | None) -> str | None:
@@ -167,31 +89,19 @@ async def on_start(message: Message, bot: Bot, db: Database) -> None:
     user_id = message.from_user.id
     lang = locale(message.from_user.language_code)
     await db.upsert_owner(user_id, message.chat.id, lang)
-    created, renamed, removed, error = await ensure_topics(bot, db, user_id, message.chat.id, lang)
+    await drop_old_topics(bot, db, user_id, message.chat.id)
     conn = await db.connection_for_user(user_id)
-    lines = [t(lang, "start_1"), t(lang, "start_2"), t(lang, "start_3")]
-    if error:
-        lines.append(t(lang, "start_topics_failed", error=error))
-    else:
-        lines.append(t(lang, "start_created", created=created, renamed=renamed, removed=removed))
+    lines = [
+        t(lang, "start_1"),
+        t(lang, "start_2"),
+        t(lang, "start_3"),
+        t(lang, "start_ready"),
+    ]
     if conn:
         lines.append(t(lang, "start_connected", connection_id=conn["connection_id"]))
     else:
         lines.append(t(lang, "start_connect"))
     await message.answer("\n".join(lines))
-
-
-async def on_topics(message: Message, bot: Bot, db: Database) -> None:
-    if message.from_user is None:
-        return
-    user_id = message.from_user.id
-    lang = locale(message.from_user.language_code)
-    await db.upsert_owner(user_id, message.chat.id, lang)
-    created, renamed, removed, error = await ensure_topics(bot, db, user_id, message.chat.id, lang)
-    if error:
-        await message.answer(t(lang, "topics_failed", error=error))
-        return
-    await message.answer(t(lang, "topics_ready", created=created, renamed=renamed, removed=removed))
 
 
 async def on_status(message: Message, db: Database) -> None:
@@ -209,7 +119,6 @@ async def on_status(message: Message, db: Database) -> None:
                 t(lang, "status_secretary", state=state),
                 t(lang, "status_messages", count=counts["messages"]),
                 t(lang, "status_queue", pending=counts["pending"], errors=counts["errors"]),
-                t(lang, "status_topics", count=await db.topic_count(user_id)),
             ]
         )
     )
@@ -251,9 +160,6 @@ async def on_business_message(message: Message, event_update: Update, bot: Bot, 
     if not await db.mark_update(event_update.update_id):
         return
     snap = snapshot_from_message(message)
-    if not _is_private(snap["chat_type"]):
-        log.info("skip non-private business message chat=%s type=%s", snap["chat_id"], snap["chat_type"])
-        return
     conn = await _remember_connection(bot, db, message.business_connection_id)
     if conn is not None and not conn["is_enabled"]:
         log.info("skip message, connection disabled")
@@ -272,9 +178,6 @@ async def on_edited(message: Message, event_update: Update, bot: Bot, db: Databa
     if not await db.mark_update(event_update.update_id):
         return
     snap = snapshot_from_message(message)
-    if not _is_private(snap["chat_type"]):
-        log.info("skip non-private edit chat=%s", snap["chat_id"])
-        return
     conn_id = message.business_connection_id
     conn = await _remember_connection(bot, db, conn_id)
     if conn is not None and not conn["is_enabled"]:
@@ -302,9 +205,6 @@ async def on_deleted(event: BusinessMessagesDeleted, event_update: Update, bot: 
     if not await db.mark_update(event_update.update_id):
         return
     chat = event.chat
-    if not _is_private(str(chat.type)):
-        log.info("skip non-private delete chat=%s type=%s", chat.id, chat.type)
-        return
     conn_id = event.business_connection_id
     conn = await _remember_connection(bot, db, conn_id)
     if conn is None or not conn["is_enabled"]:
@@ -408,7 +308,6 @@ async def on_connection(conn: BusinessConnection, event_update: Update, db: Data
 def _commands(code: str, *, admin: bool) -> list[BotCommand]:
     items = [
         BotCommand(command="start", description=t(code, "cmd_start")),
-        BotCommand(command="topics", description=t(code, "cmd_topics")),
         BotCommand(command="status", description=t(code, "cmd_status")),
     ]
     if admin:
@@ -434,7 +333,6 @@ async def setup_commands(bot: Bot, admin_ids: frozenset[int]) -> None:
 def build_dispatcher(db: Database, settings: Settings) -> Dispatcher:
     dp = Dispatcher()
     dp.message.register(on_start, CommandStart())
-    dp.message.register(on_topics, Command("topics"))
     dp.message.register(on_status, Command("status"))
     dp.message.register(on_admin, Command("admin"))
     dp.business_message.register(on_business_message)

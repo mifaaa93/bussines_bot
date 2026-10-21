@@ -13,10 +13,19 @@ MAX_PART = 4096
 CAPTION_LIMIT = 1024
 
 
+def _group_link(chat: dict[str, Any] | None, lang: str) -> str:
+    title = (chat or {}).get("title") or (chat or {}).get("username") or t(lang, "unknown_chat")
+    title_html = escape(str(title))
+    username = (chat or {}).get("username")
+    if username:
+        return f'<a href="https://t.me/{escape(username)}">{title_html}</a>'
+    return title_html
+
+
 def chat_link(user: dict[str, Any] | None, chat: dict[str, Any] | None = None, lang: str = "en") -> str:
-    """Clickable display name. Username opens the chat, otherwise the profile."""
+    """Clickable person. Username opens the chat, otherwise the profile."""
     person = user or {}
-    if not person.get("id") and chat and chat.get("id"):
+    if not person.get("id") and chat and chat.get("id") and str(chat.get("type") or "private") == "private":
         person = {
             "id": chat.get("id"),
             "first_name": chat.get("first_name"),
@@ -26,11 +35,33 @@ def chat_link(user: dict[str, Any] | None, chat: dict[str, Any] | None = None, l
     if not person.get("id"):
         return t(lang, "unknown_person")
     name = escape(display_name(person))
-    username = person.get("username") or (chat or {}).get("username")
+    username = person.get("username") or (
+        (chat or {}).get("username") if str((chat or {}).get("type") or "private") == "private" else None
+    )
     if username:
         url = f"https://t.me/{username}"
         return f'<a href="{escape(url)}">{name}</a>'
     return f'<a href="tg://user?id={int(person["id"])}">{name}</a>'
+
+
+def event_header(user: dict[str, Any] | None, chat: dict[str, Any] | None, lang: str = "en") -> str:
+    chat_type = str((chat or {}).get("type") or "private")
+    if chat_type in {"group", "supergroup", "channel"}:
+        place = _group_link(chat, lang)
+        if user and user.get("id"):
+            return f"{place}\n{t(lang, 'from_user', name=chat_link(user, None, lang))}"
+        return place
+    return chat_link(user, chat, lang)
+
+
+def labeled_header(
+    event: str,
+    user: dict[str, Any] | None,
+    chat: dict[str, Any] | None,
+    lang: str = "en",
+) -> str:
+    key = "event_deleted" if event == "deleted" else "event_edited"
+    return f"<b>{t(lang, key)}</b>\n{event_header(user, chat, lang)}"
 
 
 def _text_step(text: str, *, html: bool = True) -> dict[str, Any]:
@@ -112,7 +143,7 @@ def _stub(note: str, lang: str) -> dict[str, Any]:
 
 def build_delete(row: dict[str, Any], *, reply_hint: str | None = None, lang: str = "en") -> dict[str, Any]:
     del reply_hint
-    header = chat_link(row.get("from_json"), row.get("chat_json"), lang)
+    header = labeled_header("deleted", row.get("from_json"), row.get("chat_json"), lang)
     kind = row["kind"]
     body = body_text(kind, row.get("text"), row.get("caption"))
     body_html = _html_body(body, row.get("entities"))
@@ -151,7 +182,7 @@ def build_edit(
     del reply_hint
     who = (old or new).get("from_json") or new.get("from_json")
     chat = (old or new).get("chat_json") or new.get("chat_json")
-    header = chat_link(who, chat, lang)
+    header = labeled_header("edited", who, chat, lang)
     if old is None:
         header = header + "\n\n" + t(lang, "previous_unknown")
     old_body = body_text(old["kind"], old.get("text"), old.get("caption")) if old else None
@@ -196,7 +227,7 @@ def build_edit(
 
 def build_text_batch(rows: list[dict[str, Any]], chat_id: int, lang: str = "en") -> dict[str, Any]:
     del chat_id
-    header = chat_link(rows[0].get("from_json"), rows[0].get("chat_json"), lang)
+    header = labeled_header("deleted", rows[0].get("from_json"), rows[0].get("chat_json"), lang)
     chunks = [
         _html_body(body_text(row["kind"], row.get("text"), row.get("caption")), row.get("entities"))
         for row in rows
@@ -214,14 +245,17 @@ def build_text_batch(rows: list[dict[str, Any]], chat_id: int, lang: str = "en")
 
 def build_unknown(chat: dict[str, Any], message_ids: list[int], lang: str = "en") -> dict[str, Any]:
     del message_ids
-    user = {
-        "id": chat.get("id"),
-        "first_name": chat.get("first_name"),
-        "last_name": chat.get("last_name"),
-        "username": chat.get("username"),
-        "is_bot": False,
-    }
-    header = chat_link(user, chat, lang)
+    chat_type = str(chat.get("type") or "private")
+    person = None
+    if chat_type == "private":
+        person = {
+            "id": chat.get("id"),
+            "first_name": chat.get("first_name"),
+            "last_name": chat.get("last_name"),
+            "username": chat.get("username"),
+            "is_bot": False,
+        }
+    header = labeled_header("deleted", person, chat, lang)
     return {"steps": [_text_step(f"{header}\n\n{t(lang, 'contents_unknown')}")], "lang": lang}
 
 
